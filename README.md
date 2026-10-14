@@ -39,7 +39,7 @@ Models were evaluated using forecast error metrics, particularly Mean Percentage
 
 ## Research Files
 
-- **[Read the Final Research Report](report/U.S.-Electricity-Price-Forecasting.pdf))** — Written analysis, graphs, tables, and forecasting results.
+- **[Read the Final Research Report](report/U.S.-Electricity-Price-Forecasting.pdf)** — Written analysis, graphs, tables, and forecasting results.
 - **[View the R Markdown Analysis](U.S.%20Electricity%20Price%20Forecasting.Rmd)** — Complete R code and statistical modeling.
 - **[Historical Electricity Price Data](data/APU000072610.csv)** — Monthly U.S. electricity price dataset.
 
