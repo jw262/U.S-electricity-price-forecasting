@@ -1,0 +1,1377 @@
+---
+title: "Forecasting U.S. Electricity Prices"
+author: "Jack Wilke and Donnell Young"
+date: "May 15, 2026"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 1
+    fig_caption: true
+    fig_width: 7
+    fig_height: 4
+geometry: margin=1in
+fontsize: 11pt
+header-includes:
+  - \usepackage{titling}
+  - \pretitle{\begin{center}\vspace*{\fill}\Huge\bfseries}
+  - \posttitle{\end{center}}
+  - \preauthor{\begin{center}\large\vspace{1cm}}
+  - \postauthor{\end{center}}
+  - \predate{\begin{center}\large\vspace{0.5cm}}
+  - \postdate{\end{center}\vspace*{\fill}\newpage}
+---
+
+\newpage
+
+# Introduction
+
+U.S. electricity prices have been on a sharp upward trend in recent years and 
+this paper sets out to understand why. Using monthly BLS price data spanning 
+November 1978 through early 2026, we apply four time series frameworks: STL 
+decomposition, ETS(A,A,A), ETS(M,A,M), and a suite of ARIMA/ARIMAX models 
+evaluated across forecast horizons of 1, 3, 6, and 12 months.
+
+We find that this recent surge in electricity prices can be explained by 3 
+catalysts. First, the 2022 Russia-Ukraine war created an energy price shock that
+passed directly through to electricity prices. Second, explosive data center
+power demand on a grid that was never designed to handle this capacity. Third, 
+the Iran war has disrupted roughly a quarter of globally traded oil, sending 
+natural gas prices higher and therefore electricity prices with them.
+
+# Project I
+
+```{r setup}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE
+)
+# clean up history
+rm(list=ls())
+# load in packages
+library(forecast)
+library(ggplot2)    # data visualization 
+library(kableExtra) # manipulate table styles
+library(urca)       # unit root tests
+library(tinytex)
+library(zoo)
+```
+
+```{r}
+# ETS forecast function
+ets.f <- function(x, model, damped, h){
+  ets.fit <- ets(x, model = model, damped = damped)
+  forecast(ets.fit, h = h)
+}
+```
+
+## Import Data
+
+Read data from a comma-separated values (CSV) file into a data frame. Also checking for NA values.
+
+```{r}
+# Load historical electricity price data from the data folder
+df <- read.csv("data/APU000072610.csv")
+
+names(df)[2] <- "price"
+# check missing values
+any(is.na(df))
+```
+
+### View data
+
+```{r}
+df %>%
+  knitr::kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = F, position = "left") %>%
+  scroll_box(width = "800px", height = "250px")
+```
+
+### Time Series
+
+```{r}
+price <- ts(df$price, start=c(1978,11), frequency = 12)
+price_clean <- (na.approx(price, na.rm=FALSE))
+
+```
+
+## Preliminary Analysis
+
+### Visualizations
+
+The data is non-stationary.
+
+-   There is a clear upward trend from 1978 to 2026.
+
+-   The increase appears mostly gradual and linear, with a sharper rise after 2020.
+
+-   The trend likely reflects rising production costs, infrastructure investment, and inflation over time.
+
+There is a seasonal pattern.
+
+-   Monthly prices show regular fluctuations each year.
+
+-   Seasonal movements are relatively stable and do not increase significantly with the level of the series.
+
+-   There are no major structural breaks until the noticeable acceleration after 2020.
+
+-   Recent years show stronger price increases compared to earlier decades.
+
+```{r}
+autoplot(price_clean) +
+  ggtitle("Electricity Price per kilowatt hour") +
+  xlab("") + ylab("Price ($/kWh)") 
+```
+
+```{r}
+ggsubseriesplot(price_clean) +
+  ggtitle("Electricity Price per kilowatt hour") +
+  xlab("") + ylab("Price ($/kWh)")
+
+```
+
+```{r}
+ggseasonplot(price_clean) +
+  ggtitle("Electricity Price per kilowatt hour") +
+  xlab("") + ylab("Price ($/kWh)")
+
+```
+
+### Summary Statistics
+
+-   Summary statistics don't have much meaning since data follows a linear trend.
+
+```{r}
+summary(price_clean)
+tapply(price_clean, cycle(price_clean), mean) %>% round(3)
+tapply(price_clean, cycle(price_clean), sd) %>% round (3)  # monthly standard deviation
+```
+
+## Data Transformation
+
+-   Because the trend is mostly linear rather than exponential, a log transformation is not necessary.
+
+-   Seasonal fluctuations do not grow proportionally with the level of the data.
+
+Therefore, we proceed using the original data with interpolated values when required for modeling.
+
+## Time Series Decomposition
+
+## Moving Averages
+
+### Simple Moving Average
+
+We can highlight that in both the 5 month and the 9 month, seasonality is still prevalent, the 9 month is much smoother compared to the 5 month and raw data, which is to be expected.which means that it's not a good predictor for the trend cycle.
+
+```{r}
+#Single moving Avg
+forecast::autoplot(price_clean, series="Data") +
+  autolayer(ma(price_clean,5), series="5-MA") +
+  autolayer(ma(price_clean,9), series="9-MA") +
+  ggtitle("Electricity Price: Simple Moving Average") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values=c("Data"="grey50", "5-MA"="red", "9-MA"="blue"),
+                      breaks=c("Data", "5-MA", "9-MA"))
+```
+
+### Double Moving Average
+
+We can see that the double moving average removed the seasonality, and did a much better job of predicting the cycle trend component compared to the single moving average. Its also smoother than the single moving average as well. We can conclude that it's a good predictor of the trend cycle component.
+
+```{r}
+# Double moving average (2x12-MA)
+autoplot(price_clean, series="Data") +
+  autolayer(ma(price_clean, 12), series="2x12-MA") +
+  ggtitle("Electricity Price: Double Moving Average") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values=c("Data"="grey50", "2x12-MA"="red"),
+                      breaks=c("Data", "2x12-MA"))
+```
+
+## Classical Decomposition
+
+```{r}
+# Additive decomposition
+decomp_add <- decompose(price_clean, type="additive")
+autoplot(decomp_add) +
+  ggtitle("Classical Decomposition (Additive): Electricity Price")
+
+cbind(year=floor(time(price_clean)), 
+      month=cycle(price_clean),
+      trend=decomp_add$trend, 
+      seasonal=decomp_add$seasonal, 
+      random=decomp_add$random) %>%
+  knitr::kable() %>%
+  kable_styling(bootstrap_options="striped", full_width=F, position="left") %>%
+  scroll_box(width="800px", height="250px")
+
+# fitted values
+autoplot(price_clean, series = "Data") +
+  autolayer(decomp_add$trend + decomp_add$seasonal, series = "Fitted") +
+  ggtitle("Avg Electricity Price: Classical Decomposition (Standard)") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values = c("Data" = "grey50", "Fitted" = "red"),
+                      breaks = c("Data", "Fitted"))
+
+
+```
+
+Examine extreme outliers in the remainder component:
+
+```{r}
+# Outliers in the STL remainder
+extreme_outliers <- function(x) {
+  cat("Summary Statistics: \n")
+  print(summary(x))
+  cat(" \n")
+  
+  Q1 <- quantile(x, 0.25, na.rm = TRUE)
+  Q3 <- quantile(x, 0.75, na.rm = TRUE)
+  IQR <- Q3 - Q1
+  lower_bound <- Q1 - 3 * IQR
+  upper_bound <- Q3 + 3 * IQR
+  
+  date <- time(x)
+  is_outlier <- (!is.na(x)) & ((x < lower_bound) | (x > upper_bound))
+  outliers <- data.frame(
+    date  = as.yearmon(date[is_outlier]),
+    value = x[is_outlier]
+  )
+  
+  if (nrow(outliers) > 0) {
+    cat("Extreme Outliers (3 × IQR rule): \n")
+    print(outliers)
+  } else {
+    cat("No extreme outliers detected (3 × IQR rule). \n")
+  }
+}
+
+extreme_outliers(decomp_add$random)
+
+```
+
+## STL Decomposition
+
+For both the STL, additive, and multiplicative decomposition there was barely any change, which could be because the seasonality of the electricity price is not due to price levels, but to the season itself, which means, if it's summer, people use AC, thus consuming more electricity, and in winter, We found out that a majority of the houses use gas for heating, which can explain this issue. This all means that the seasonal component is constant over time.
+
+```{r}
+# STL decomposition
+STL_decomp <- stl(price_clean, s.window=13)
+autoplot(STL_decomp) +
+  ggtitle("STL Decomposition: Electricity Price")
+
+cbind(year=floor(time(price_clean)),
+month=cycle(price_clean),
+trend=STL_decomp$time.series[,"trend"],
+seasonal=STL_decomp$time.series[,"seasonal"],
+remainder=STL_decomp$time.series[,"remainder"]) %>%
+knitr::kable() %>%
+kable_styling(bootstrap_options="striped", full_width=F, position="left") %>%
+scroll_box(width="800px", height="250px")
+
+# fitted values
+autoplot(price_clean, series="Data") +
+autolayer(STL_decomp$time.series[,"trend"] + STL_decomp$time.series[,"seasonal"], series="Fitted") +
+ggtitle("Avg Electricity Price: STL Decomposition (Standard)") +
+xlab("") + ylab("Price ($/kWh)") +
+scale_colour_manual(values=c("Data"="grey50", "Fitted"="red"),
+breaks=c("Data", "Fitted"))
+```
+
+Examine extreme outliers in the STL remainder component:
+
+```{r}
+# Outliers in the Classical remainder
+remainder_stl <- STL_decomp$time.series[, "remainder"]
+autoplot(remainder_stl) +
+  ggtitle("STL Decomposition: Remainder Component")
+
+extreme_outliers(remainder_stl)
+```
+
+# Project II
+
+## Time Series Cross Validation (TSCV)
+
+a)  We chose a moving window for a few reasons. The main one being that demand of data centers are massive and growing. Data centers use massive amounts of electricity, so we use a moving window which makes the recent observations more informative than the older ones.
+
+<!-- -->
+
+B)  We chose our start year to be 2010 because it includes a more relevant electricity market: shale gas revolution, rise in renewable energy, and a rise in AI demand. Thus, having it start in 2010 rather than 2005, our estimates drift towards a more relevant market.
+
+C)  144 months = 12 years = \~ 2 business cycles. 2 cycles ensure the models sees at least one full expansion and one full contraction.
+
+D)  Forecast Horizons: h = 1 --\> Next month h = 3 --\> Quarterly h = 6 --\> Semi-annual h = 12 --\> Annual
+
+E)  Since the data has a trend, we use percentage metrics (MPE, MAPE). They tell more of the story than raw errors (ME, MAE, RMSE). Ignore Theil's U, since it is unreliable when the data has a trend.
+
+```{r}
+
+# Setup
+window.size <- 12 * 12   # 144-month moving window, so that it includes as least 2 business cycles
+
+# Use post-2010 data for TSCV (adjust start date to match your data)
+price.tscv <- window(price_clean, start = c(2012, 1))
+
+
+# tsCV returns forecast errors; stlf uses STL with rwdrift benchmark
+e.stl <- tsCV(price.tscv,
+              stlf,
+              robust  = FALSE,
+              s.window = 13,
+              method  = "rwdrift",
+              h       = 12,
+              window  = window.size)
+
+#Forecasts
+
+# The formula: forecast = actual - lag(error, -h)
+price.stl.h1  <- price.tscv - stats::lag(e.stl[, 1],  -1)
+price.stl.h3  <- price.tscv - stats::lag(e.stl[, 3],  -3)
+price.stl.h6  <- price.tscv - stats::lag(e.stl[, 6],  -6)
+price.stl.h12 <- price.tscv - stats::lag(e.stl[, 12], -12)
+
+autoplot(price.stl.h1, series = "STL") +
+  autolayer(price.tscv, series = "Data") +
+  ggtitle("Electricity Price: TSCV of Robust STL Benchmark, h=1") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values = c("Data" = "grey50", "STL" = "red"),
+                      breaks = c("Data", "STL"))
+
+autoplot(price.stl.h3, series = "STL") +
+  autolayer(price.tscv, series = "Data") +
+  ggtitle("Electricity Price: TSCV of Robust STL Benchmark, h=3") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values = c("Data" = "grey50", "STL" = "red"),
+                      breaks = c("Data", "STL"))
+
+autoplot(price.stl.h6, series = "STL") +
+  autolayer(price.tscv, series = "Data") +
+  ggtitle("Electricity Price: TSCV of Robust STL Benchmark, h=6") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values = c("Data" = "grey50", "STL" = "red"),
+                      breaks = c("Data", "STL"))
+
+autoplot(price.stl.h12, series = "STL") +
+  autolayer(price.tscv, series = "Data") +
+  geom_vline(xintercept = 2022 + 10/12,
+             linetype = "dashed",
+             color = "darkred",
+             size = 0.8) +
+  annotate("text",
+           x = 2022 + 10/12,
+           y = 0.14,
+           label = "ChatGPT Launch\n(Nov 2022)",
+           hjust = -0.05,
+           size = 3.5,
+           color = "darkred") +
+  ggtitle("Electricity Price: TSCV of Robust STL Benchmark, h=12") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values = c("Data" = "grey50", "STL" = "red"),
+                      breaks = c("Data", "STL"))
+
+eval.stl <- rbind(accuracy(price.stl.h1,  price.tscv),
+                  accuracy(price.stl.h3,  price.tscv),
+                  accuracy(price.stl.h6,  price.tscv),
+                  accuracy(price.stl.h12, price.tscv))
+
+rownames(eval.stl) <- c("h=1", "h=3", "h=6", "h=12")
+eval.stl %>% as.data.frame() %>% round(3)
+
+```
+
+MPE increases from 0.417 --\> 3.570 across time horizons, indicating a consistent positive bias - meaning the model underestimates actual prices as time horizon increases. We believe this is in part because of massive and growing demand for data centers.
+
+MAPE increases from 0.841 --\> 0.3577 across time horizons, indicating that errors increases as time horizon increases.
+
+## Forecast the Future
+
+Question 3:
+
+Consistent with the moving window used in TSCV, the robust STL decomposition is applied to the last 144 months of historical data (2014M2–2026M1) to generate forecasts for the next 24 months.
+
+In the figure below, The trend component shows a clear acceleration in early 2022 as a result from Russia-Ukraine war and an increase in trend towards the end of 2022 (could be from LLM's being released), the seasonal component remains stable, and the remainder component captures the 2022 energy price shock without distorting the trend estimate.
+
+```{r}
+# Fit robust STL to the last 144 months of data
+# (consistent with the moving window used in TSCV)
+price.stl.fit <- stl(tail(price_clean, window.size), 
+                     s.window = 13, 
+                     robust   = TRUE)
+
+autoplot(price.stl.fit) +
+  ggtitle("Electricity Price: STL Decomposition (Robust)") +
+  xlab("")
+```
+
+In the figure below, we forecast 24 months ahead (24 months is a reasonable horizon for electricity prices) from the robust STL benchmark with 80%, 90%, 95%, and 99% prediction intervals.
+
+The blue shaded show the forecast confidence intervals at respective levels through the period 2028. The dashed blue line highlights the start of the Russia-Ukraine war. The dashed red line highlights the launch of ChatGPT in November 2022, which helps see how AI and the demand for data centers are a tailwind for these increasing electricity prices.
+
+```{r}
+# Fit robust STL to last 144 months
+price.stl.fit <- stl(tail(price_clean, window.size),
+                     s.window = 13,
+                     robust   = TRUE)
+
+# Produce forecasts with 80, 95, and 99% intervals
+price.stl.pred <- forecast(price.stl.fit,
+                           method = "rwdrift",
+                           h      = 24,
+                           level  = c(80, 90, 95))
+
+# Graph - starting at 2005
+autoplot(price.stl.pred) +
+  autolayer(price.tscv, color = "grey50") +
+  geom_vline(xintercept = 2022 + 1/12,
+             linetype = "dashed", color = "steelblue", size = 0.8) +
+  annotate("text", x = 2022 + 1/12, y = 0.13,
+           label = "Russia-Ukraine\nWar (Feb 2022)",
+           hjust = 1.05, size = 3.5, color = "steelblue") +
+  geom_vline(xintercept = 2022 + 10/12,
+             linetype = "dashed", color = "darkred", size = 0.8) +
+  annotate("text", x = 2022 + 10/12, y = 0.14,
+           label = "ChatGPT Launch\n(Nov 2022)",
+           hjust = -0.05, size = 3.5, color = "darkred") +
+  ggtitle("Electricity Price: Forecasts from Robust STL Benchmark") +
+  xlab("") + ylab("Price ($/kWh)") +
+  theme(legend.position = "right")
+
+# Table
+price.stl.pred %>%
+  knitr::kable() %>%
+  kable_styling(bootstrap_options = "striped",
+                full_width = F,
+                position = "left") %>%
+  scroll_box(width = "800px", height = "250px")
+```
+
+```{r}
+
+# Display the STL component estimates
+states <- price.stl.fit$time.series
+display.states <- cbind(floor(time(states)), cycle(states), states)
+colnames(display.states) <- c("year", "month", colnames(states))
+display.states %>%
+  round(6) %>%
+  knitr::kable() %>%
+  kable_styling(bootstrap_options = "striped", 
+                full_width = F, 
+                position = "left") %>%
+  scroll_box(width = "800px", height = "250px")
+
+```
+
+**Manual Verification**
+
+-   $Y^{sa}_1$ (2014M2) = 0.136914 + (-0.001473) = 0.135441
+-   $Y^{sa}_T$ (2026M1) = 0.192588 + 0.000224 = 0.192812
+-   T = 144, drift per month = (0.192812 - 0.135441) / 143 = 0.000401
+
+**Forecast 1: February 2026 (h = 1)**
+
+Seasonally adjusted forecast: $$\hat{Y}^{sa}_{T+1} = 0.192812 + 0.000401 \times 1 = 0.193213$$
+
+Re-seasonalize using Yfeb2026 = -0.001005: $$\hat{Y}_{Feb2026} = 0.193213 + (-0.001005) = 0.192208$$
+
+R table output: 0.1922079
+
+**Forecast 2: March 2026 (h = 2)**
+
+Seasonally adjusted forecast: $$\hat{Y}^{sa}_{T+2} = 0.192812 + 0.000401 \times 2 = 0.193614$$
+
+Re-seasonalize using $S_{2025M3}$ = -0.000594: $$\hat{Y}_{Mar2026} = 0.193614 + (-0.000594) = 0.193020$$
+
+R table output: 0.1930208
+
+# Project III
+
+For our first model we chose ETS(A,A,A) as there is a linear upward trend in electricty prices, as a result from the Russia/Ukraine and rising demand to expand our electricty grid for the use of AI. We initally chose ETS (A,Ad,A) for our seconed model, however the parameter phi converged to 0.9799 at the 0.98 ceiling, meaning the trend was barely being dampened at all. For this reason, for our seconed model we chose ETS(M,A,M).
+
+```{r}
+
+# Section 2: TSCV
+# Setup is identical to the STL benchmark in Project 2
+window.size  <- 12 * 12
+price.tscv   <- window(price_clean, start = c(2012, 1))
+
+# 2A: ETS(A,A,A) TSCV
+e.ets <- tsCV(price.tscv, ets.f, model = "AAA", damped = FALSE, h = 12,
+              window = window.size)
+
+# 1-month-ahead
+price.ets.AAA.h1 <- price.tscv - stats::lag(e.ets[, 1], -1)
+autoplot(price.ets.AAA.h1, series = "ETS") +
+  autolayer(price.tscv, series = "Data") +
+  ggtitle("Electricity Price: TSCV of ETS(A,A,A), h=1") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values = c("Data" = "grey50", "ETS" = "red"),
+                      breaks = c("Data", "ETS"))
+
+# 3-month-ahead
+price.ets.AAA.h3 <- price.tscv - stats::lag(e.ets[, 3], -3)
+autoplot(price.ets.AAA.h3, series = "ETS") +
+  autolayer(price.tscv, series = "Data") +
+  ggtitle("Electricity Price: TSCV of ETS(A,A,A), h=3") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values = c("Data" = "grey50", "ETS" = "red"),
+                      breaks = c("Data", "ETS"))
+
+# 6-month-ahead
+price.ets.AAA.h6 <- price.tscv - stats::lag(e.ets[, 6], -6)
+autoplot(price.ets.AAA.h6, series = "ETS") +
+  autolayer(price.tscv, series = "Data") +
+  ggtitle("Electricity Price: TSCV of ETS(A,A,A), h=6") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values = c("Data" = "grey50", "ETS" = "red"),
+                      breaks = c("Data", "ETS"))
+
+# 12-month-ahead
+price.ets.AAA.h12 <- price.tscv - stats::lag(e.ets[, 12], -12)
+autoplot(price.ets.AAA.h12, series = "ETS") +
+  autolayer(price.tscv, series = "Data") +
+  ggtitle("Electricity Price: TSCV of ETS(A,A,A), h=12") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values = c("Data" = "grey50", "ETS" = "red"),
+                      breaks = c("Data", "ETS"))
+
+# Accuracy
+eval.ets.AAA <- rbind(accuracy(price.ets.AAA.h1,  price.tscv),
+                      accuracy(price.ets.AAA.h3,  price.tscv),
+                      accuracy(price.ets.AAA.h6,  price.tscv),
+                      accuracy(price.ets.AAA.h12, price.tscv))
+rownames(eval.ets.AAA) <- c("h=1", "h=3", "h=6", "h=12")
+eval.ets.AAA %>% as.data.frame() %>% round(4)
+
+```
+
+```{r}
+# 2B: ETS(M,A,M) TSCV
+e.ets <- tsCV(price.tscv, ets.f, model = "MAM", damped = FALSE, h = 12,
+              window = window.size)
+
+# 1-month-ahead
+price.ets.MAM.h1 <- price.tscv - stats::lag(e.ets[, 1], -1)
+autoplot(price.ets.MAM.h1, series = "ETS") +
+  autolayer(price.tscv, series = "Data") +
+  ggtitle("Electricity Price: TSCV of ETS(M,A,M), h=1") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values = c("Data" = "grey50", "ETS" = "red"),
+                      breaks = c("Data", "ETS"))
+
+# 3-month-ahead
+price.ets.MAM.h3 <- price.tscv - stats::lag(e.ets[, 3], -3)
+autoplot(price.ets.MAM.h3, series = "ETS") +
+  autolayer(price.tscv, series = "Data") +
+  ggtitle("Electricity Price: TSCV of ETS(M,A,M), h=3") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values = c("Data" = "grey50", "ETS" = "red"),
+                      breaks = c("Data", "ETS"))
+
+# 6-month-ahead
+price.ets.MAM.h6 <- price.tscv - stats::lag(e.ets[, 6], -6)
+autoplot(price.ets.MAM.h6, series = "ETS") +
+  autolayer(price.tscv, series = "Data") +
+  ggtitle("Electricity Price: TSCV of ETS(M,A,M), h=6") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values = c("Data" = "grey50", "ETS" = "red"),
+                      breaks = c("Data", "ETS"))
+
+# 12-month-ahead
+price.ets.MAM.h12 <- price.tscv - stats::lag(e.ets[, 12], -12)
+autoplot(price.ets.MAM.h12, series = "ETS") +
+  autolayer(price.tscv, series = "Data") +
+  ggtitle("Electricity Price: TSCV of ETS(M,A,M), h=12") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values = c("Data" = "grey50", "ETS" = "red"),
+                      breaks = c("Data", "ETS"))
+
+# Accuracy
+eval.ets.MAM <- rbind(accuracy(price.ets.MAM.h1,  price.tscv),
+                        accuracy(price.ets.MAM.h3,  price.tscv),
+                        accuracy(price.ets.MAM.h6,  price.tscv),
+                        accuracy(price.ets.MAM.h12, price.tscv))
+rownames(eval.ets.MAM) <- c("h=1", "h=3", "h=6", "h=12")
+eval.ets.MAM %>% as.data.frame() %>% round(4)
+```
+
+```{r}
+# Summary: MPE and MAPE
+eval.ets.mpe <- cbind(eval.ets.AAA[, "MPE"], eval.ets.MAM[, "MPE"])
+colnames(eval.ets.mpe) <- c("ETS(A,A,A)", "ETS(M,A,M)")
+rownames(eval.ets.mpe) <- c("h=1", "h=3", "h=6", "h=12")
+eval.ets.mpe %>% as.data.frame() %>% round(4)
+
+eval.ets.mape <- cbind(eval.ets.AAA[, "MAPE"], eval.ets.MAM[, "MAPE"])
+colnames(eval.ets.mape) <- c("ETS(A,A,A)", "ETS(M,A,M)")
+rownames(eval.ets.mape) <- c("h=1", "h=3", "h=6", "h=12")
+eval.ets.mape %>% as.data.frame() %>% round(4)
+```
+
+Our ETS(M,A,M) model outperforms our ETS (A,A,A) model in the MAPE which indicates higher accuracy.The MAPE for the (M,A,M) are 1.1319 is lower than the (A,A,A) model's of 1.3012 which indicates greater accuracy in the short term. This pattern continues for h=3, h=6 and h=12 which indicates greater accuracy in the mid term also.
+
+However the (M,A,M) model is outperformed by the (A,A,A) model in the MPE statistic. For h=1 the (M,A,M) model under estimates by more than the (A,A,A) model with a value of .3876 compared to .0185 for the (A,A,A) model. For h=3 the (M,A,M) model underestimates by more than the (A,A,A) model over estimates with values of 0.5168 and -0.2213. At the horizon of h=6 the (M,A,M) has a better performing MPE but at h=12 the (A,A,A) is far better than the (M,A,M). From these statistics we can conclude that the (M,A,M) model is more biased but has a higher accuracy compared to the (A,A,A) model.
+
+```{r}
+# 3A: ETS(A,A,A) Fit & Forecast
+price.ets.AAA.fit <- ets(tail(price_clean, window.size), model = "AAA",
+                         damped = FALSE)
+summary(price.ets.AAA.fit)
+autoplot(price.ets.AAA.fit)
+
+```
+
+The fitted model for the (A,A,A) model shows a alpha level of .0683 which indicates almost no change in the level of data overtime. However this contradicts our data's long term trend. Due to the fact that our model is only fitted to the last 12 years it's probable that the value is skewed from more recent data.
+
+The beta value is at .0052 which is a very small value indicating that the slope changes slowly overtime
+
+The gamma value being at 1e-04 indicates that the seasonal variations change very slowly overtime.
+
+The Russia-Ukraine energy shock caused extreme residuals, consistent with what the data shows. When Russia invaded Ukraine in February 2022, Russia restricted natural gas supply to Europe. Since natural gas is one of the primary fuels used to generate electricity, as the price of natural gas spiked, price of electricity followed. This remainder component is consistent with what we observed in Project 1. Another thing to note on extreme outliers is that it takes time for electricity prices to absorb these shocks, which is why we see outliers in July, August, and October, instead of February.
+
+```{r}
+
+# Check residual outliers
+extreme_outliers(price.ets.AAA.fit$residuals)
+
+# Forecast
+price.ets.AAA.pred <- forecast(price.ets.AAA.fit, h = 24, level = c(80, 90, 95))
+
+# Graph
+
+autoplot(price.ets.AAA.pred) +
+  autolayer(price.tscv, color = "grey50") +
+  geom_vline(xintercept = 2022 + 1/12,
+             linetype = "dashed", color = "steelblue", size = 0.8) +
+  annotate("text", x = 2022 + 1/12, y = 0.13,
+           label = "Russia-Ukraine\nWar (Feb 2022)",
+           hjust = 1.05, size = 3.5, color = "steelblue") +
+  geom_vline(xintercept = 2022 + 10/12,
+             linetype = "dashed", color = "darkred", size = 0.8) +
+  annotate("text", x = 2022 + 10/12, y = 0.14,
+           label = "ChatGPT Launch\n(Nov 2022)",
+           hjust = -0.05, size = 3.5, color = "darkred") +
+  ggtitle("Electricity Price: Forecasts from ETS(A,A,A)") +
+  xlab("") + ylab("Price ($/kWh)") +
+  theme(legend.position = "right")
+
+# Table
+price.ets.AAA.pred %>%
+  knitr::kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = F,
+                position = "left") %>%
+  scroll_box(width = "800px", height = "250px")
+
+# States table (used for manual verification)
+states.AAA <- price.ets.AAA.fit$states
+display.states.AAA <- cbind(floor(time(states.AAA)), cycle(states.AAA), states.AAA)
+colnames(display.states.AAA) <- c("year", "month", colnames(states.AAA))
+display.states.AAA %>%
+  round(6) %>%
+  knitr::kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = F,
+                position = "left") %>%
+  scroll_box(width = "800px", height = "250px")
+```
+
+```{r}
+# 3B: ETS(M,A,M) Fit & Forecast
+price.ets.MAM.fit <- ets(tail(price_clean, window.size), model = "MAM",
+                         damped = FALSE)
+summary(price.ets.MAM.fit)
+autoplot(price.ets.MAM.fit)
+
+```
+
+alpha = 0.4118: the level updates at a moderate pace slower than ETS(A,A,A), which indicates.
+
+beta = 0.1942: the trend updates over time, which is the key difference from ETS(A,A,A). The model allows the slope to evolve, which captures the steeper post-2022 trend that our fixed trend in Project 1 would miss.
+
+gamma = 5e-0 signals the seasonal component is nearly fixed, which is consistent with stable seasonality.
+
+sigma = 0.0142 vs 0.005 for AAA; the larger sigma reflects wider multiplicative uncertainty, explaining the wider forecast bands you see in the graph.
+
+```{r}
+# Check residual outliers
+extreme_outliers(price.ets.MAM.fit$residuals)
+
+# Forecast
+price.ets.MAM.pred <- forecast(price.ets.MAM.fit, h = 24, level = c(80, 90, 95))
+
+# Graph
+autoplot(price.ets.MAM.pred) +
+ autolayer(price.tscv, color = "grey50") +
+  geom_vline(xintercept = 2022 + 1/12,
+             linetype = "dashed", color = "steelblue", size = 0.8) +
+  annotate("text", x = 2022 + 1/12, y = 0.13,
+           label = "Russia-Ukraine\nWar (Feb 2022)",
+           hjust = 1.05, size = 3.5, color = "steelblue") +
+  geom_vline(xintercept = 2022 + 10/12,
+             linetype = "dashed", color = "darkred", size = 0.8) +
+  annotate("text", x = 2022 + 10/12, y = 0.14,
+           label = "ChatGPT Launch\n(Nov 2022)",
+           hjust = -0.05, size = 3.5, color = "darkred") +
+  ggtitle("Electricity Price: Forecasts from ETS(M,A,M)") +
+  xlab("") + ylab("Price ($/kWh)") +
+  theme(legend.position = "right")
+
+# Table
+price.ets.MAM.pred %>%
+  knitr::kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = F,
+                position = "left") %>%
+  scroll_box(width = "800px", height = "250px")
+
+# States table (used for manual verification)
+states.MAM <- price.ets.MAM.fit$states
+display.states.MAM <- cbind(floor(time(states.MAM)), cycle(states.MAM),
+                               states.MAM)
+display.states.MAM <- cbind(floor(time(states.MAM)), cycle(states.MAM),
+                             states.MAM)
+colnames(display.states.MAM) <- c("year", "month", colnames(states.MAM))
+display.states.MAM %>%
+  round(6) %>%
+  knitr::kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = F,
+                position = "left") %>%
+  scroll_box(width = "800px", height = "250px")
+```
+
+## Manual Verification
+
+-   $Y^{sa}_1$ (2014M2) = 0.136914 + (-0.001473) = 0.135441
+-   $Y^{sa}_T$ (2026M1) = 0.192588 + 0.000224 = 0.192812
+-   T = 144, drift per month = (0.192812 - 0.135441) / 143 = 0.000401
+
+#### Forecast 1: February 2026 (h = 1)
+
+Seasonally adjusted forecast: $$\hat{Y}^{sa}_{T+1} = 0.192812 + 0.000401 \times 1 = 0.193213$$
+
+Re-seasonalize using $S_{Feb2026}$ = -0.001005: $$\hat{Y}_{Feb2026} = 0.193213 + (-0.001005) = 0.192208$$
+
+R table output: 0.1922079
+
+#### Forecast 2: March 2026 (h = 2)\*\*
+
+Seasonally adjusted forecast: $$\hat{Y}^{sa}_{T+2} = 0.192812 + 0.000401 \times 2 = 0.193614$$
+
+Re-seasonalize using $S_{Mar2026}$ = -0.000594: $$\hat{Y}_{Mar2026} = 0.193614 + (-0.000594) = 0.193020$$
+
+R table output: 0.1930208
+
+# Project IV
+
+### ARIMA Model 1
+
+ARIMA Model 1
+
+order of non-seasonal differencing:1
+
+order of seasonal differencing: 1
+
+non-seasonal autoregressive order: 2
+
+non-seasonal moving average order: 2
+
+seasonal autoregressive order: 1
+
+seasonal moving average order: 1
+
+The model includes a drift.
+
+This model has a significant AR1, AR2, MA1,MA2,and SMA1 at the 5% level but the SAR1 is insignificant which is a poor indication for the model.This indicates the model is not useable.
+
+One of the first 24 autocorrelation are significant, and the p-value is above .05 so the model is not serial correlated.
+
+However, the AR and the MA components contain common roots, and some of the inverted roots are very close to the unit circle.
+
+Due to the common roots and insignificant parameter this model is not useable and will not be considered for further analysis.
+
+```{r}
+train <- window(price_clean, start=c(2012,1), end=c(2023,12)) 
+price.arima.m1 <- auto.arima(train)
+summary(price.arima.m1)
+checkresiduals(price.arima.m1)
+autoplot(price.arima.m1)
+autoplot(price.arima.m1)$data$roots %>% `/`(1,.) %>% Mod() %>% round(3) %>% sort(decreasing=TRUE)
+```
+
+### Model 3
+
+```{r}
+# seasonal dummies
+s.dummy <- ts(seasonaldummy(price_clean), start=start(price_clean), frequency=12)
+ 
+# training sample for the seasonal dummies
+train.s <- window(s.dummy, start=start(train), end=end(train))
+
+# ARIMAX model with seasonal dummies
+price.arima.m3 <- auto.arima(train, xreg=train.s)
+summary(price.arima.m3)
+#Residuals
+checkresiduals(price.arima.m3)
+
+autoplot(price.arima.m3)
+
+autoplot(price.arima.m3)$data$roots %>% `/`(1,.) %>% Mod() %>% round(3) %>% sort(decreasing = TRUE)
+
+extreme_outliers(price.arima.m3$residuals)
+```
+
+### ARIMA Model 3 : ARIMAX with Seasonal Dummies
+
+Model 3 extends ARIMA by including seasonal dummy variables as exogenous regressors:
+
+> **ARIMA(0,1,0)(1,0,0)[12] with seasonal dummies**
+
+First differencing ($d = 1$) removes the trend, while a seasonal AR(1) term captures yearly dependence. Monthly dummy variables account for stable seasonal patterns, which is appropriate when seasonality does not vary significantly over time.
+
+The seasonal SAR(1) coefficient is not statistically significant, but most monthly dummies are significant, with higher values in summer months (June–August), consistent with higher electricity demand. Our only not significant months are March, April and November.
+
+The Ljung-Box test yields a p-value of **0.1841 (\> 0.05)**, indicating no residual autocorrelation. Residual plots confirm no remaining structure.
+
+All inverted AR roots lie well within the unit circle ($\approx$ 0.881), indicating a stable and stationary model. No extreme outliers are detected.
+
+Model 3 satisfies most diagnostic criteria:
+
+-   Significant and meaningful drift but insignificant SAR1
+-   No residual autocorrelation\
+-   Stable and invertible\
+-   No extreme outliers
+
+Therefore, Model M4 is selected as the preferred model. While Model M3 is already a strong model which achieves a strong performance. Model 4 is an ARIMA (0,1,0) that includes a trend and level variable which controls for the jump in level and change in trend after the Russia/Ukraine Shock. M4's trend control was found to be significant but the level control was not. This may be due to the late spike in the data which the model cannot accurately pick up. It also includes seasonal dummies to control for the seasonality of the data. The M4 model has greater accuracy and lower bias compared to the M3 which proves it's greater performance over the M3.
+
+Since the model includes seasonal dummies for January through November, December serves as the baseline. The dummies are positive and significant for Jan., Feb., May, June, July, Aug., Sep., and Oct., and insignificant for the other months. That is, using December as a baseline, avg. electricity price are higher in Jan., Feb., May, June, July, Aug., Sep., and Oct. and not significantly different in the other months.
+
+As shown below, none of the first 24 autocorrelation is significant (outside the 95% confidence band marked by the dashed lines). In addition, the Ljung-Box test has a p-value above 0.05, indicating that the residuals are not serially correlated.
+
+There are no MA or AR roots to test so this model passes all criteria and will is our best ARIMA model.
+
+```{r}
+date <- time(price_clean)
+
+d_level <- ts(as.numeric(date>=2022+2/12), start=start(date),end=end(date),frequency=12)
+d_trend <- ts(cumsum(as.numeric(date>=2022+2/12)), start=start(date),end=end(date),frequency=12)
+# exogenous variables in the ARIMAX model
+s.dummy <- ts(seasonaldummy(price_clean), start=start(price_clean), frequency=12)
+x.reg <- ts.intersect(s.dummy, d_level,d_trend)
+colnames(x.reg) <- c(colnames(s.dummy), "D_level", "D_trend")
+
+# training sample for the exogenous variables
+train <- window(price_clean, start=c(2012,1), end=c(2023,12)) 
+train.x <- window(x.reg, start=start(train), end=end(train))
+
+# ARIMAX model with both the seasonal dummies and the covid index
+price.arima.m4 <- auto.arima(train, xreg=train.x)
+summary(price.arima.m4)
+
+checkresiduals(price.arima.m4)
+autoplot(price.arima.m4)$data$roots %>% `/`(1,.) %>% Mod() %>% round(3) %>% sort(decreasing = TRUE)
+
+# inverted AR and MA roots
+autoplot(price.arima.m4)
+
+extreme_outliers(price.arima.m4$residuals)
+```
+
+# Project V
+
+### 1. Model Selection
+
+For Project 5, we selected ARIMA-M3 and ARIMA-M4 from Project 4. ARIMA-M3 is an ARIMAX model that includes seasonal dummy variables as exogenous regressors. ARIMA-M4 is an ARIMAX model that includes seasonal dummy variables, a level adjustment, and a trend adjustment.
+
+These two models were selected because they represent two different ways of modeling the average electricity price series. ARIMA-M3 captures the monthly seasonal pattern in electricity prices, while ARIMA-M4 adds level and trend adjustments to account for the stronger change in the series after 2022
+
+```{r}
+auto.arima.f <- function(x, d=NA, D=NA, xreg=NULL, newxreg=NULL, h, lambda=NULL){
+  arima.fit <- auto.arima(x, d=d, D=D, xreg=xreg, lambda=lambda)
+  forecast(arima.fit, h=h, xreg=newxreg)
+}
+```
+
+```{r}
+# size of the moving window
+window.size <- 12*12 
+
+# sample used in time series cross validation
+s.dummy.tscv <- window(s.dummy, start=start(price.tscv)) 
+x.reg.tscv   <- window(x.reg, start=start(price.tscv))
+
+
+```
+
+## ARIMA Model 3 TSCV
+
+```{r}
+e.arima <- tsCV(price.tscv, auto.arima.f, D=0, d=1, xreg=s.dummy.tscv, h=12, window=window.size)
+
+# 1-month-ahead forecasts
+price.arima.m3.h1  <- price.tscv - lag(e.arima[,1], -1)
+autoplot(price.arima.m3.h1, series="ARIMA") +
+  autolayer(price_clean, series="Data") +
+  ggtitle("Avg Electricity Price: TSCV of ARIMA-M3 Model, h=1") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values=c("Data"="grey50","ARIMA"="red"), breaks=c("Data","ARIMA"))
+
+# 3-month-ahead forecasts
+price.arima.m3.h3  <- price.tscv - lag(e.arima[,3], -3)
+autoplot(price.arima.m3.h3, series="ARIMA") +
+  autolayer(price_clean, series="Data") +
+  ggtitle("Avg Electricity Price: TSCV of ARIMA-M3 Model, h=3") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values=c("Data"="grey50","ARIMA"="red"), breaks=c("Data","ARIMA"))
+
+# 6-month-ahead forecasts
+price.arima.m3.h6  <- price.tscv - lag(e.arima[,6], -6)
+autoplot(price.arima.m3.h6, series="ARIMA") +
+  autolayer(price_clean, series="Data") +
+  ggtitle("Avg Electricity Price: TSCV of ARIMA-M3 Model, h=6") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values=c("Data"="grey50","ARIMA"="red"), breaks=c("Data","ARIMA"))
+
+# 12-month-ahead forecasts
+price.arima.m3.h12 <- price.tscv - lag(e.arima[,12], -12)
+autoplot(price.arima.m3.h12, series="ARIMA") +
+  autolayer(price_clean, series="Data") +
+  ggtitle("Avg Electricity Price: TSCV of ARIMA-M3 Model, h=12") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values=c("Data"="grey50","ARIMA"="red"), breaks=c("Data","ARIMA"))
+```
+
+```{r}
+eval.arima.m3 <- rbind(accuracy(price.arima.m3.h1,  price.tscv), 
+                       accuracy(price.arima.m3.h3,  price.tscv), 
+                       accuracy(price.arima.m3.h6,  price.tscv), 
+                       accuracy(price.arima.m3.h12, price.tscv))
+rownames(eval.arima.m3) <- c("h=1", "h=3", "h=6", "h=12")
+eval.arima.m3 %>% as.data.frame() %>% round(3)
+
+```
+
+For ARIMA-M3, the time series cross validation results show that forecast accuracy becomes worse as the forecast horizon increases. At h = 1, the model has a MAPE = 0.754. At h = 12, these values increase to a MAPE = 3.068. This means ARIMA-M3 is much more accurate for short-term forecasts than for long-term forecasts.
+
+The MPE values are positive for all four forecast horizons: 0.238 at h = 1, 0.740 at h = 3, 1.339 at h = 6, and 2.246 at h = 12. Since MPE is positive, ARIMA-M3 tends to underforecast the actual electricity price.
+
+The overlay graph for ARIMA-M3 is consistent with the accuracy table. The model tracks the actual electricity price series better at shorter horizons, but the forecast becomes less accurate as the horizon increases. This is shown by the increase in MAPE from 0.747 at h = 1 to 3.255 at h = 12. The positive MPE values also show that the ARIMA-M3 forecasts are generally below the actual values, meaning that the model tends to under forecast electricity prices.
+
+## ARIMA Model 4 TSCV
+
+```{r}
+e.arima <- tsCV(price.tscv, auto.arima.f, D=0, d=1, xreg=x.reg.tscv, h=12, window=window.size)
+
+# 1-month-ahead forecasts
+price.arima.m4.h1  <- price.tscv - lag(e.arima[,1], -1)
+autoplot(price.arima.m4.h1, series="ARIMA") +
+  autolayer(price_clean, series="Data") +
+  ggtitle("Avg Electricity Price: TSCV of ARIMA-M4 Model, h=1") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values=c("Data"="grey50","ARIMA"="red"), breaks=c("Data","ARIMA"))
+
+# 3-month-ahead forecasts
+price.arima.m4.h3  <- price.tscv - lag(e.arima[,3], -3)
+autoplot(price.arima.m4.h3, series="ARIMA") +
+  autolayer(price_clean, series="Data") +
+  ggtitle("Avg Electricity Price: TSCV of ARIMA-M4 Model, h=3") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values=c("Data"="grey50","ARIMA"="red"), breaks=c("Data","ARIMA"))
+
+# 6-month-ahead forecasts
+price.arima.m4.h6  <- price.tscv - lag(e.arima[,6], -6)
+autoplot(price.arima.m4.h6, series="ARIMA") +
+  autolayer(price_clean, series="Data") +
+  ggtitle("Avg Electricity Price: TSCV of ARIMA-M4 Model, h=6") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values=c("Data"="grey50","ARIMA"="red"), breaks=c("Data","ARIMA"))
+
+# 12-month-ahead forecasts
+price.arima.m4.h12 <- price.tscv - lag(e.arima[,12], -12)
+autoplot(price.arima.m4.h12, series="ARIMA") +
+  autolayer(price_clean, series="Data") +
+  ggtitle("Avg Electricity Price: TSCV of ARIMA-M4 Model, h=12") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values=c("Data"="grey50","ARIMA"="red"), breaks=c("Data","ARIMA"))
+```
+
+```{r}
+# evaluate the forecasts
+eval.arima.m4 <- rbind(accuracy(price.arima.m4.h1,  price.tscv), 
+                       accuracy(price.arima.m4.h3,  price.tscv), 
+                       accuracy(price.arima.m4.h6,  price.tscv), 
+                       accuracy(price.arima.m4.h12, price.tscv))
+rownames(eval.arima.m4) <- c("h=1", "h=3", "h=6", "h=12")
+eval.arima.m4 %>% as.data.frame() %>% round(3)
+
+
+```
+
+For ARIMA-M4, the time series cross validation results also show that forecast accuracy becomes worse as the forecast horizon increases. At h = 1, the model has an MAPE = 0.723. At h = 12, these values increase to an MAPE = 1.794. This means ARIMA-M4 also performs better for short-term forecasts than for long-term forecasts.
+
+The MPE values are negative for all four horizons: -0.011 at h = 1, -0.113 at h = 3, -0.435 at h = 6, and -0.491 at h = 12. Since MPE is negative, ARIMA-M4 tends to overforecast the actual electricity price. However, the MAPE values are lower than ARIMA-M3 at every horizon, which means ARIMA-M4 is more accurate overall even though it has a slight overforecasting bias.
+
+The overlay graph shows that ARIMA-M4 follows the actual electricity price series better than ARIMA-M3. This suggests that adding the level adjustment and trend adjustment improves the model’s forecasting performance.
+
+### ARIMA Forecasts
+
+```{r}
+# Create exogenous variables for the 24-month forecast period: 2026M1 to 2027M12
+
+# Level adjustment: 1 after 2022M2, same logic as your model
+d_level.new <- ts(rep(1, 24),
+               start = c(2026, 2),
+               frequency = 12)
+
+# Trend adjustment: cumulative trend after 2022M2
+d_trend.new <- ts(as.numeric(tail(d_trend,1)) + cumsum(d_level.new),
+                  start = start(d_level.new),
+                  frequency = 12)
+
+# Seasonal dummies for the forecast period
+s.dummy.new <- ts(seasonaldummy(d_level.new),
+                  start = start(d_level.new),
+                  frequency = 12)
+
+# Combine all future exogenous variables
+x.reg.new <- ts.intersect(s.dummy.new, d_level.new, d_trend.new)
+
+# Make column names match the original xreg used in the model
+colnames(x.reg.new) <- colnames(x.reg)
+```
+
+```{r}
+price.arima.m3.fit  <- auto.arima(window(price_clean, 
+start=c(2014,2)), xreg=window(s.dummy, start=c(2014,2)))
+summary(price.arima.m3.fit)
+
+checkresiduals(price.arima.m3.fit)
+
+autoplot(price.arima.m3.fit)
+
+autoplot(price.arima.m3.fit)$data$roots %>% `/`(1,.) %>% Mod() %>% round(3) %>% sort(decreasing=TRUE)
+
+extreme_outliers(price.arima.m3.fit$residuals)
+
+```
+
+Function `auto.arima` selects a regression with ARIMA(0,2,1) errors for ARIMA-M3. This model includes seasonal dummy variables as exogenous regressors.
+
+The diagnostic checks show that ARIMA-M3 does not fully pass the model diagnosis. The Ljung-Box test has a p-value of 0.0967, which is above the .05 threshold. Therefore, we can't reject the null hypothesis that the residuals are serially correlated. We tried a manual input of the differencing and the model still was not stable. We believe this may be cause by the shock from the war. Due to the war happening so late in our time series it's probable that the model is being influenced by the late change.
+
+The residual ACF plot also shows at least one significant autocorrelation spike outside the 95% confidence bands. The inverse MA root is inside the unit circle but very close to the boundary, which suggests that the model is close to non-invertibility. However, there are no extreme outliers detected using the 3 × IQR rule.
+
+Overall, ARIMA-M3 captures the seasonal pattern in electricity prices, but it does not fully pass the residual diagnostic checks.
+
+### Confidence Intervals
+
+```{r}
+price.arima.m3.pred <- forecast(price.arima.m3.fit, h=24, level=c(90,99), xreg=s.dummy.new)
+
+autoplot(price.arima.m3.pred) +
+  autolayer(price_clean, color ="grey50") +
+  ggtitle("Avg Electricty Price: Forecasts from ARIMA-M3 Model") +
+  xlab("") + ylab("Price ($/kWh)") +
+  theme(legend.position="none")
+
+price.arima.m3.pred %>%
+  knitr::kable() %>%
+  kable_styling(bootstrap_options="striped", full_width=F, position="left") %>%
+  scroll_box(width="800px", height="250px")
+
+```
+
+```{r}
+price.arima.m4.fit  <- auto.arima(window(price_clean, 
+start=c(2014,2)), xreg=window(x.reg, start=c(2014,2)))
+summary(price.arima.m4.fit)
+checkresiduals(price.arima.m4.fit)
+autoplot(price.arima.m4.fit)
+autoplot(price.arima.m4.fit)$data$roots %>% `/`(1,.) %>% Mod() %>% round(3) %>% sort(decreasing=TRUE)
+extreme_outliers(price.arima.m4.fit$residuals)
+```
+
+This model includes seasonal dummy variables, a level adjustment, and a trend adjustment as exogenous regressors. We found similar results to our initial ARIMA-M4 where the trend is significant and the level is not. This is consistent because the trend sees a noticeable jump but the level change takes a longer period which is likely why it's not captured in the model.Compared with ARIMA-M3, this model is designed to capture both the monthly seasonal pattern and the post-2022 level/trend change in average electricity prices.
+
+The residual diagnostic plot shows that the residuals are centered around zero, but the ACF plot still has at least one autocorrelation spike outside the 95% confidence bands. This suggests that some autocorrelation may still remain in the residuals. However, the residuals appear roughly normally distributed based on the histogram.
+
+The inverse AR root is inside the unit circle, but it is very close to the boundary. This suggests that the AR component is stable, but the model is close to the unit circle. Therefore, the model should be interpreted carefully.
+
+Overall, ARIMA-M4 is still preferred over ARIMA-M3 because it performs better in the time series cross validation. ARIMA-M4 has lower MAPE values at every forecast horizon: 0.723 compared with 0.754 at h = 1, 1.057 compared with 1.352 at h = 3, 1.380 compared with 1.697 at h = 6, and 1.794 compared with 3.068 at h = 12. This means that even though the diagnostic plots show some remaining issues, ARIMA-M4 gives better out-of-sample forecast accuracy than ARIMA-M3.
+
+```{r}
+
+price.arima.m4.pred <- forecast(price.arima.m4.fit, h=24, level=c(90,99), xreg=x.reg.new)
+
+autoplot(price.arima.m4.pred) +
+  autolayer(price_clean, color ="grey50") +
+  ggtitle("Avg Electricity Prices: Forecasts from ARIMA-M4 Model") +
+  xlab("") + ylab("Price ($/kWh)") +
+  theme(legend.position="none")
+price.arima.m4.pred %>%
+  knitr::kable() %>%
+  kable_styling(bootstrap_options="striped", full_width=F, position="left") %>%
+  scroll_box(width="800px", height="250px")
+```
+
+# Project VI
+
+### Forecast Comparison
+
+```{r}
+eval.mpe <- cbind(eval.stl[,"MPE"], eval.ets.MAM[,"MPE"], eval.arima.m4[,"MPE"])
+colnames(eval.mpe) <- c("STL Benchmark", "ETS(M,A,M)", "ARIMA-M4")
+rownames(eval.mpe) <- c("h=1", "h=3", "h=6", "h=12")
+eval.mpe %>% as.data.frame() %>% round(3)
+
+eval.mape <- cbind(eval.stl[,"MAPE"], eval.ets.MAM[,"MAPE"], eval.arima.m4[,"MAPE"])
+colnames(eval.mape) <- c("STL Benchmark", "ETS(M,A,M)", "ARIMA-M4")
+rownames(eval.mape) <- c("h=1", "h=3", "h=6", "h=12")
+eval.mape %>% as.data.frame() %>% round(3)
+```
+
+Based on the time series cross validation, The ARIMA-M4 model performs the best at most time intervals for the MAPE. It is best at h=3,h=6 and h=12 but the STL performs marginally better at the h=1.The ARIMA-M4 model performs the best for MPE at h=1, h=3, and h=12. However, The ETS (M,A,M) performs best at h=6. From these statistics we can conclude that the ARIMA model has the best performance since it has the highest accuracy and at all intervals other than h=6 it has the lowest bias.
+
+### Combination Forecasts
+
+```{r}
+# 1-month-ahead forecasts
+price.combined.h1 <- (price.ets.MAM.h1 + price.arima.m4.h1) / 2
+autoplot(price.combined.h1, series="combined") +
+  autolayer(price_clean, series="Data") +
+  ggtitle("Avg Electricity Price: TSCV of ETS-ARIMAX Combination, h=1") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values=c("Data"="grey50","combined"="red"), breaks=c("Data","combined"))
+
+price.combined.h3 <- (price.ets.MAM.h3 + price.arima.m4.h3) / 2
+autoplot(price.combined.h3, series="combined") +
+  autolayer(price_clean, series="Data") +
+  ggtitle("Avg Electricity Price: TSCV of ETS-ARIMAX Combination, h=3") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values=c("Data"="grey50","combined"="red"), breaks=c("Data","combined"))
+
+price.combined.h6 <- (price.ets.MAM.h6 + price.arima.m4.h6) / 2
+autoplot(price.combined.h6, series="combined") +
+  autolayer(price_clean, series="Data") +
+  ggtitle("Avg Electricity Price: TSCV of ETS-ARIMAX Combination, h=6") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values=c("Data"="grey50","combined"="red"), breaks=c("Data","combined"))
+
+price.combined.h12 <- (price.ets.MAM.h12 + price.arima.m4.h12) / 2
+autoplot(price.combined.h12, series="combined") +
+  autolayer(price_clean, series="Data") +
+  ggtitle("Avg Electricity Price: TSCV of ETS-ARIMAX Combination, h=12") +
+  xlab("") + ylab("Price ($/kWh)") +
+  scale_colour_manual(values=c("Data"="grey50","combined"="red"), breaks=c("Data","combined"))
+```
+
+### Evaluation of Combined model
+
+We decided to combine the ARIMA-M4 and the ETS(M,A,M) because ARIMAX is better at forecasting in the short-run but ETS allows change in seasonality over time which should improve our model performance in the long run.
+
+```{r}
+eval.combined <- rbind(accuracy(price.combined.h1,  price.tscv), 
+                       accuracy(price.combined.h3,  price.tscv), 
+                       accuracy(price.combined.h6,  price.tscv), 
+                       accuracy(price.combined.h12, price.tscv))
+rownames(eval.combined) <- c("h=1", "h=3", "h=6", "h=12")
+eval.combined %>% as.data.frame() %>% round(3)
+
+```
+
+###Base models vs Combo model
+
+```{r}
+#MPE Comparison
+eval.mpe <- cbind(eval.stl[,"MPE"], eval.ets.MAM[,"MPE"], eval.arima.m4[,"MPE"], eval.combined[,"MPE"])
+colnames(eval.mpe) <- c("STL Benchmark", "ETS(M,A,M)", "ARIMA-M4", "ETS-ARIMAX Combined")
+rownames(eval.mpe) <- c("h=1", "h=3", "h=6", "h=12")
+eval.mpe %>% as.data.frame() %>% round(3)
+
+#MAPE Comparison
+eval.mape <- cbind(eval.stl[,"MAPE"], eval.ets.MAM[,"MAPE"], eval.arima.m4[,"MAPE"], eval.combined[,"MAPE"])
+colnames(eval.mape) <- c("STL Benchmark", "ETS(M,A,M)", "ARIMA-M4", "ETS-ARIMAX Combined")
+rownames(eval.mape) <- c("h=1", "h=3", "h=6", "h=12")
+eval.mape %>% as.data.frame() %>% round(3)
+```
+
+```{r}
+price.combined.pred <- (price.ets.MAM.pred$mean + price.arima.m4.pred$mean) / 2
+
+autoplot(price.combined.pred, color ="blue") +
+  autolayer(price_clean, color ="grey50") +
+  ggtitle("Avg Electrcity Price: Combination Forecasts from ETS(M,A,M) and ARIMAX (M4)") + xlab("") + ylab("Price ($/kWh)") + theme(legend.position="none")
+```
+
+```{r}
+cbind(year=floor(time(price.combined.pred)), 
+      month=cycle(price.combined.pred),
+      STL=price.stl.pred$mean, 
+      ETS.MAM=price.ets.MAM.pred$mean, 
+      ARIMAX.M4=price.arima.m4.pred$mean, 
+      ETS.ARIMAX.Combined=price.combined.pred) %>%
+  knitr::kable() %>%
+  kable_styling(bootstrap_options="striped", full_width=F, position="left") %>%
+  scroll_box(width="800px", height="250px")
+```
+
+```{r}
+# STL-ETS-ARIMAX combination
+price.combined3.h1  <- (price.stl.h1  + price.ets.MAM.h1  + price.arima.m4.h1)  / 3
+price.combined3.h3  <- (price.stl.h3  + price.ets.MAM.h3  + price.arima.m4.h3)  / 3
+price.combined3.h6  <- (price.stl.h6  + price.ets.MAM.h6  + price.arima.m4.h6)  / 3
+price.combined3.h12 <- (price.stl.h12 + price.ets.MAM.h12 + price.arima.m4.h12) / 3
+
+eval.combined3 <- rbind(accuracy(price.combined3.h1,  price.tscv), 
+                        accuracy(price.combined3.h3,  price.tscv), 
+                        accuracy(price.combined3.h6,  price.tscv), 
+                        accuracy(price.combined3.h12, price.tscv))
+rownames(eval.combined3) <- c("h=1", "h=3", "h=6", "h=12")
+eval.combined3 %>% as.data.frame() %>% round(3)
+```
+
+```{r}
+#MPE Comparison
+eval.mpe <- cbind(eval.stl[,"MPE"], eval.ets.MAM[,"MPE"], eval.arima.m4[,"MPE"], eval.combined3[,"MPE"])
+colnames(eval.mpe) <- c("STL Benchmark", "ETS(M,A,M)", "ARIMA-M4", "3 Model Combination")
+rownames(eval.mpe) <- c("h=1", "h=3", "h=6", "h=12")
+eval.mpe %>% as.data.frame() %>% round(3)
+
+#MAPE Comparison
+eval.mape <- cbind(eval.stl[,"MAPE"], eval.ets.MAM[,"MAPE"], eval.arima.m4[,"MAPE"], eval.combined3[,"MAPE"])
+colnames(eval.mape) <- c("STL Benchmark", "ETS(M,A,M)", "ARIMA-M4", "3 Model Combination")
+rownames(eval.mape) <- c("h=1", "h=3", "h=6", "h=12")
+eval.mape %>% as.data.frame() %>% round(3)
+```
+
+Just as a test we decided to combine all 3 models to see if their was any improvement. Similar to our previous model combination the ARIMA-M4 produced the best results and is still our preferred model.
+e
+# Part VI
+
+## Reflection
+
+The time series data used in this project contains both a positive long-term trend and strong seasonality. One of the most significant features of the data is the structural shock that occurs around 2022 during the Russian invasion of Ukraine. This event caused a noticeable shift in the level of the series and created additional forecasting challenges. Aside from this disruption, the majority of the dataset follows a relatively stable pattern, with only the most recent years showing substantial deviations from the historical trend.
+
+Over the course of the semester, we explored several forecasting approaches and compared their performance, strengths, and weaknesses. The methods used included:
+
+-   STL Benchmark Model
+-   ETS(A,A,A)
+-   ETS(M,A,M)
+-   Multiple ARIMA/ARIMAX models
+
+One of the biggest lessons from this project was learning that no forecasting method is universally superior. Different models perform better depending on the structure of the data, the forecasting horizon, and the presence of outside shocks.
+
+### STL Benchmark Model
+
+The STL model was the simplest and most interpretable method we used. By decomposing the series into trend, seasonal, and remainder components, it provided a useful baseline understanding of the data. Another advantage of the STL model is that it requires relatively few assumptions and parameters compared to more advanced forecasting methods.
+
+However, despite its simplicity and interpretability, the STL model produced the weakest forecasting performance overall. While it captured the general trend and seasonal movement of the data, it struggled to adapt to sudden structural changes such as the Russia/Ukraine War shock. This demonstrated one of the major limitations of simpler decomposition methods: they may perform adequately under stable conditions but often fail when large external events affect the time series.
+
+### ETS Models
+
+The ETS(A,A,A) model served as a strong baseline forecasting model. It was able to adapt to changes in trend over time while remaining relatively stable and easy to interpret. The forecasts generated by this model were fairly reliable, although the model displayed slightly more bias and lower accuracy than some of the more advanced approaches.
+
+The ETS(M,A,M) model ultimately performed better because the multiplicative seasonal structure captured the increasing seasonal variation in the data more effectively. Compared to the additive ETS model, the multiplicative version adjusted more naturally as the magnitude of the series increased over time.
+
+One major advantage of ETS methods overall is their stability. These models are generally less sensitive to small changes in the data and are easier to maintain over long forecasting periods. However, a major weakness is that ETS models struggle to explicitly account for outside events or exogenous shocks such as wars, policy changes, or economic disruptions. Because of this limitation, the ETS models were less effective at handling the sudden shift associated with the Russia/Ukraine War.
+
+### ARIMA and ARIMAX Models
+
+The ARIMA and ARIMAX models were the most complex forecasting methods used in this project, but they also produced the strongest forecasting performance overall. The ARIMA-M4 model, which included seasonal dummy variables and non-seasonal differencing, a level control and trend control achieved the highest accuracy and lowest bias across most forecast horizons.
+
+One of the major strengths of the ARIMAX framework is its ability to include external variables that may influence the series. This allowed us to better account for the effects of the Russia/Ukraine War shock compared to the STL and ETS approaches. By controlling for external influences, the ARIMAX models were able to separate temporary disruptions from the long-term underlying trend.
+
+Despite their superior accuracy, the ARIMA and ARIMAX models introduced several additional challenges.
+
+### Model Instability and Forecasting Challenges
+
+One of the most difficult issues we encountered was model instability over time. During the diagnostic process, the recommended differencing structure changed between the ARIMA-M3 and ARIMA-M4 models. Conceptually, this instability likely occurred because the underlying data itself became less stable after the geopolitical shock in 2022.
+
+Structural breaks can significantly change autocorrelation patterns within a time series, causing yje previously optimal model to become less effective. This issue became especially noticeable during Time Series Cross Validation (TSCV), where models are repeatedly retrained on rolling subsets of the data. Small changes in the training sample often produced different differencing recommendations and parameter estimates.
+
+To address this issue, we attempted to manually specify the differencing parameters in the ARIMA models. However, the models continued to return very similar outputs, suggesting that the instability was not simply caused by the optimization process, but rather by the changing structure of the data itself.
+
+This part of the project highlighted one of the major real-world difficulties of forecasting: models are rarely static. As economic conditions, external shocks, and patterns evolve, forecasting models often require continual reevaluation and adjustment.
+
+### Data Preparation Challenges
+
+Another major challenge involved the preprocessing and preparation of the dataset. The series contained two missing observations:
+
+One missing point caused by the partial government shutdown at the end of 2025 and one unexplained missing observation from the 1980s. To address these gaps, we used interpolation with the approx method. This approach worked reasonably well for maintaining continuity in the dataset, but it also demonstrated how sensitive forecasting models can be to missing data and data quality issues.
+
+This experience reinforced the importance of data cleaning and preprocessing in forecasting projects. Even highly sophisticated models can perform poorly if the underlying data contains inconsistencies, outliers, or missing observations.
+
+# Conclusion
+
+As previously discussed the Russia-Ukraine war was a clear catalyst for higher
+energy prices in 2022 and therefore spilling over to electricity prices. However 
+this only tells part of the story. 
+
+```{r americas-growing-grid, fig.cap="*The U.S. electricity grid has not grown in the past 15 years.*"}
+
+gen_data <- data.frame(
+  year = c(2000,2001,2002,2003,2004,2005,2006,2007,2008,2009,
+           2010,2011,2012,2013,2014,2015,2016,2017,2018,2019,
+           2020,2021,2022,2023,2024,2025),
+  twh  = c(3802,3737,3858,3883,3971,4055,4065,4157,4119,3953,
+            4120,4101,4054,4066,4093,4077,4077,4015,4178,4118,
+            3953,4116,4243,4178,4370,4500)
+)
+
+ggplot(gen_data, aes(x = year, y = twh)) +
+  annotate("rect",
+           xmin = 2007, xmax = 2022,
+           ymin = -Inf, ymax = Inf,
+           fill = "#b0c4de", alpha = 0.3) +
+  geom_line(color = "#2c5f8a", linewidth = 1.2) +
+  geom_point(color = "#2c5f8a", size = 2) +
+  annotate("text", x = 2014.5, y = 4280,
+           label = "~15 Years of Stagnation (2007-2022)",
+           size = 3.2, color = "#555555", fontface = "italic") +
+  annotate("text", x = 2023.2, y = 4560,
+           label = "AI & Data Center\nDemand Surge",
+           size = 3.2, color = "#c0392b", fontface = "bold") +
+  annotate("segment",
+           x = 2022, xend = 2025,
+           y = 4250, yend = 4490,
+           arrow = arrow(length = unit(0.2,"cm")),
+           color = "#c0392b", linewidth = 0.8) +
+  scale_x_continuous(breaks = seq(2000, 2025, 5)) +
+  scale_y_continuous(labels = scales::comma,
+                     limits = c(3700, 4650)) +
+  labs(title    = "America's Growing Grid",
+       subtitle = "After Almost Two Decades of Stagnation, Rapid Load Growth Has Returned",
+       x        = NULL,
+       y        = "Annual Generation (TWh)",
+       caption  = "Source: U.S. Energy Information Administration (EIA)") +
+  theme_minimal(base_size = 11) +
+  theme(plot.title       = element_text(face = "bold", size = 13),
+        plot.subtitle    = element_text(color = "grey40", size = 9),
+        panel.grid.minor = element_blank())
+```
+
+Another part to the story is AI energy. AI energy is so constrained and so 
+bottlenecked we have never seen something quite like this before. An estimate 
+from Boston Consulting Group forecasts global AI data center power demand to 
+grow 55% over the next 3 years, which will be undeniably led by the United 
+States because we are the AI leader. As shown in the figure above, the United 
+States has had flat electricity consumption for the past 15 years. The U.S. is 
+expected to get into a 100% CAGR on energy for inference and remain at a 30% 
+CAGR for training. We are seeing this demand from a country that has not grown
+its electricity grid in the past 15 years.
+
+The U.S. grid is extremely stretched. We are hitting peak loads and electricity 
+pricing is surging as a result from data center demand. However, even without 
+peak loads and price surges it would still take a long time because big tech
+data centers are not located in dense urban areas so therefore the transmission 
+process takes time. Data centers also need to on-board hundreds of megawatts 
+(MWs) all at once. And our grid was not designed to handle this type of load, it
+was designed for more of a gradual increase from residential and commercial use.
+So this is another strong catalyst that is contributing to the surge in electricity
+prices.
+
+The final part to this story  is what is happening right now in the Strait of
+Hormuz. Roughly 1/4 of all internationally traded oil has been disrupted as a 
+result of this war. And even if this war ends this second, it takes time for 
+oil rigs to come back on. The U.S. doesn't generate electricity from oil however
+this supply shock affects electricity prices through the broad increase in 
+energy prices. Natural gas prices surge since energy markets are correlated and
+since the U.S. uses natural gas to power electricity in many regions, electricity
+prices increase as a result.
