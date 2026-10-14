@@ -18,9 +18,9 @@ U.S. electricity prices have risen sharply in recent years, raising questions ab
 
 Our research examines three potential catalysts contributing to this trend:
 
-1. **Russia–Ukraine War (2022):** The global energy supply shock, particularly in natural gas markets, and its potential transmission into electricity prices.
-2. **AI and Data Center Demand:** Rapid growth in electricity consumption associated with AI infrastructure, placing additional pressure on electricity generation and grid capacity.
-3. **Strait of Hormuz Disruptions:** Geopolitical risks to global energy supply and the potential indirect effects of higher energy costs on U.S. electricity prices.
+1. **The Russia–Ukraine War (2022)** created a global energy supply shock, particularly in natural gas markets, contributing to higher electricity prices.
+2. **Rapid growth in AI and data center demand** is placing significant pressure on U.S. electricity generation and grid capacity, creating potential upward pressure on electricity prices.
+3. **Disruptions in the Strait of Hormuz** threaten global oil and energy supplies, potentially increasing natural gas costs and indirectly contributing to higher U.S. electricity prices.
 
 Using historical electricity price data, we apply statistical forecasting techniques to analyze trends, seasonality, and forecast accuracy. The geopolitical and AI-related developments provide economic context for the analysis rather than causal relationships established by the forecasting models.
 
@@ -46,7 +46,5 @@ Models were evaluated using forecast error metrics, particularly Mean Percentage
 ## Tools & Techniques
 
 **Programming:** R, R Markdown
-
-**Libraries:** `forecast`, `ggplot2`, `zoo`, `urca`, `knitr`, `kableExtra`
 
 **Methods:** STL Decomposition, Exponential Smoothing, ARIMA, ARIMAX, Time-Series Cross-Validation, Forecast Error Analysis
